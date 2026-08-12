@@ -1,5 +1,8 @@
 .env
 .DS_Store
+.build/
+.swiftpm/
+dist/
 *.log
 *.out
 *.err
