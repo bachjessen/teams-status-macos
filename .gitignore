@@ -1,0 +1,7 @@
+.env
+.DS_Store
+*.log
+*.out
+*.err
+powerd_log.txt
+previous_state.txt
