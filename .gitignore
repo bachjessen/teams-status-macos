@@ -1,7 +1,12 @@
 .env
 .DS_Store
+.build/
+.swiftpm/
+dist/
 *.log
 *.out
 *.err
 powerd_log.txt
 previous_state.txt
+.vscode/
+app/
