@@ -17,7 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Teams status pending")
         item.button?.image?.isTemplate = true
         rebuild(Snapshot(runtime: RuntimeState(), missingSettings: configuration.missingSettings, isChecking: false, transitions: []))
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
         let activeCoordinator = coordinator!
         task = Task { [weak self, activeCoordinator] in
             await activeCoordinator.restore()
@@ -59,10 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func complete(_ snapshot: Snapshot) {
         task = nil; rebuild(snapshot)
-        for transition in snapshot.transitions {
-            let content = UNMutableNotificationContent(); content.title = "Teams Meeting Status for Home Assistant"
-            content.body = "\(transition.destination) delivery \(transition.recovered ? "recovered" : "is failing")"
-            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            for transition in snapshot.transitions {
+                let content = UNMutableNotificationContent(); content.title = "Teams Meeting Status for Home Assistant"
+                content.body = "\(transition.destination) delivery \(transition.recovered ? "recovered" : "is failing")"
+                UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+            }
         }
     }
     private func rebuild(_ snapshot: Snapshot) {
