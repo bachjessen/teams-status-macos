@@ -1,5 +1,5 @@
 import XCTest
-@testable import MSTeamsStatusSender
+@testable import TeamsMeetingStatus
 
 private actor Provider: MeetingStateProviding {
     var states: [MeetingState]; var delay: UInt64
@@ -26,7 +26,7 @@ private final class TestClock: @unchecked Sendable {
 final class CoreTests: XCTestCase {
     func testEnvParsingAndQuotedValues() { let c = Configuration.parse("token='abc def'\nlocal_url=\"http://ha.local:8123/\"\nwebhook_url=https://example.test/hook\n"); XCTAssertEqual(c.localToken, "abc def"); XCTAssertEqual(c.localBaseURL?.host, "ha.local"); XCTAssertTrue(c.issues.isEmpty) }
     func testMalformedURLs() { let c = Configuration.parse("local_url=hello\nwebhook_url=ftp://example.test/a\n"); XCTAssertNil(c.localBaseURL); XCTAssertNil(c.externalWebhookURL); XCTAssertEqual(c.issues.count, 2) }
-    func testMissingSettings() { XCTAssertEqual(Configuration.parse("").missingSettings, ["local_url", "token", "webhook_url"]) }
+    func testMissingSettings() { XCTAssertEqual(Configuration.parse("").missingSettings, ["local_url", "token"]) }
     func testTeamsLogParsing() { XCTAssertEqual(TeamsLogParser.parse("x Microsoft Teams Call in progress Created"), .inMeeting); XCTAssertEqual(TeamsLogParser.parse("x Microsoft Teams Call in progress Released"), .notInMeeting); XCTAssertEqual(TeamsLogParser.parse("none"), .unknown) }
     func testInitialDeliveryAndStateChanges() async {
         let l = Sender(), e = Sender(), p = Provider([.notInMeeting, .notInMeeting, .inMeeting]); let clock = TestClock()
@@ -34,6 +34,20 @@ final class CoreTests: XCTestCase {
         _ = await c.check(); clock.advance(30); _ = await c.check(); clock.advance(30); _ = await c.check()
         let localCount = await l.count(); let externalCount = await e.count()
         XCTAssertEqual(localCount, 2); XCTAssertEqual(externalCount, 2)
+    }
+    func testUnknownDetectionPreservesKnownMeetingState() async {
+        let local = Sender(), provider = Provider([.inMeeting, .unknown])
+        let coordinator = Coordinator(configuration: Configuration(), provider: provider, local: local, store: MemoryStore(), logger: MemoryLogger())
+        _ = await coordinator.check()
+        let snapshot = await coordinator.check()
+        let localCount = await local.count()
+        XCTAssertEqual(snapshot.runtime.teamsState, .inMeeting)
+        XCTAssertEqual(localCount, 1)
+    }
+    func testInitialUnknownDetectionRemainsUnknown() async {
+        let coordinator = Coordinator(configuration: Configuration(), provider: Provider([.unknown]), store: MemoryStore(), logger: MemoryLogger())
+        let snapshot = await coordinator.check()
+        XCTAssertEqual(snapshot.runtime.teamsState, .unknown)
     }
     func testExactExternalBoundaryAndFailedAttemptThrottle() async {
         let e = Sender(), p = Provider([.notInMeeting]); let clock = TestClock()
@@ -51,6 +65,17 @@ final class CoreTests: XCTestCase {
         let executor = StubExecutor(result: .success(ProcessExecutionResult(terminationStatus: 0, standardOutput: output, standardError: Data(), processIdentifier: 10)))
         let state = try await PowerdProvider(executor: executor, timeout: 1).currentState()
         XCTAssertEqual(state, .inMeeting)
+    }
+
+    func testPowerdProviderLogAccessDeniedIsTyped() async {
+        let errorOutput = Data("Could not open local log store: Operation not permitted".utf8)
+        let executor = StubExecutor(result: .success(ProcessExecutionResult(terminationStatus: 1, standardOutput: Data(), standardError: errorOutput, processIdentifier: 10)))
+        do {
+            _ = try await PowerdProvider(executor: executor, timeout: 1).currentState()
+            XCTFail("Expected log access denial")
+        } catch {
+            XCTAssertEqual(error as? AppError, .logAccessDenied)
+        }
     }
 
     func testPowerdProviderUnsuccessfulExitDoesNotExposeOutput() async {

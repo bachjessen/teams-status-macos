@@ -17,21 +17,25 @@ public struct Configuration: Sendable, Equatable {
     public var issues: [String]
     public var checkInterval: TimeInterval
     public var externalInterval: TimeInterval
+    public var notificationsEnabled: Bool
+    public var externalEnabled: Bool
 
-    public init(localBaseURL: URL? = nil, localToken: String? = nil, externalWebhookURL: URL? = nil, issues: [String] = [], checkInterval: TimeInterval = 30, externalInterval: TimeInterval = 300) {
+    public init(localBaseURL: URL? = nil, localToken: String? = nil, externalWebhookURL: URL? = nil, issues: [String] = [], checkInterval: TimeInterval = 30, externalInterval: TimeInterval = 300, notificationsEnabled: Bool = true, externalEnabled: Bool = false) {
         self.localBaseURL = localBaseURL
         self.localToken = localToken
         self.externalWebhookURL = externalWebhookURL
         self.issues = issues
-        self.checkInterval = checkInterval
+        self.checkInterval = min(300, max(5, checkInterval))
         self.externalInterval = externalInterval
+        self.notificationsEnabled = notificationsEnabled
+        self.externalEnabled = externalEnabled
     }
 
     public var missingSettings: [String] {
         var result = issues
         if localBaseURL == nil { result.append("local_url") }
         if localToken?.isEmpty != false { result.append("token") }
-        if externalWebhookURL == nil { result.append("webhook_url") }
+        if externalEnabled && externalWebhookURL == nil { result.append("webhook_url") }
         return Array(Set(result)).sorted()
     }
 
@@ -60,7 +64,7 @@ public struct Configuration: Sendable, Equatable {
             } else if let hash = value.firstIndex(of: "#") {
                 value = value[..<hash].trimmingCharacters(in: .whitespaces)
             }
-            if ["token", "local_url", "webhook_url"].contains(String(key)) { values[String(key)] = String(value) }
+            if ["token", "local_url", "webhook_url", "check_interval", "notifications_enabled", "external_enabled"].contains(String(key)) { values[String(key)] = String(value) }
         }
         func httpURL(_ key: String) -> URL? {
             guard let string = values[key], !string.isEmpty else { return nil }
@@ -70,7 +74,10 @@ public struct Configuration: Sendable, Equatable {
             }
             return url
         }
-        return Configuration(localBaseURL: httpURL("local_url"), localToken: values["token"], externalWebhookURL: httpURL("webhook_url"), issues: issues)
+        let interval = values["check_interval"].flatMap(TimeInterval.init) ?? 30
+        let notificationsEnabled = values["notifications_enabled"].map { $0.lowercased() != "false" } ?? true
+        let externalEnabled = values["external_enabled"].map { $0.lowercased() == "true" } ?? false
+        return Configuration(localBaseURL: httpURL("local_url"), localToken: values["token"], externalWebhookURL: httpURL("webhook_url"), issues: issues, checkInterval: interval, notificationsEnabled: notificationsEnabled, externalEnabled: externalEnabled)
     }
 }
 
@@ -109,13 +116,14 @@ public protocol MeetingStateProviding: Sendable { func currentState() async thro
 public protocol StatusSending: Sendable { func send(_ state: MeetingState) async throws }
 
 public enum AppError: LocalizedError, Sendable, Equatable {
-    case invalidResponse, httpStatus(Int), command(String), processTimeout
+    case invalidResponse, httpStatus(Int), command(String), processTimeout, logAccessDenied
     public var errorDescription: String? {
         switch self {
         case .invalidResponse: return "Invalid HTTP response"
         case .httpStatus(let code): return "HTTP \(code)"
         case .command(let text): return text
         case .processTimeout: return "Teams detection timed out"
+        case .logAccessDenied: return "Log access denied"
         }
     }
 }
@@ -145,6 +153,10 @@ public struct PowerdProvider: MeetingStateProviding {
             timeout: timeout
         )
         guard result.terminationStatus == 0 else {
+            let errorText = String(decoding: result.standardError, as: UTF8.self)
+            if errorText.localizedCaseInsensitiveContains("Could not open local log store") || errorText.localizedCaseInsensitiveContains("Operation not permitted") {
+                throw AppError.logAccessDenied
+            }
             throw AppError.command("Teams detection command exited with status \(result.terminationStatus)")
         }
         return TeamsLogParser.parse(String(decoding: result.standardOutput, as: UTF8.self))
@@ -189,8 +201,9 @@ public struct RuntimeState: Codable, Sendable, Equatable {
     public var lastExternalAttempt: Date?
     public var localState: DestinationState
     public var externalState: DestinationState
-    public init(teamsState: MeetingState? = nil, lastCheck: Date? = nil, lastLocalSuccess: Date? = nil, lastExternalSuccess: Date? = nil, lastExternalAttempt: Date? = nil, localState: DestinationState = .unconfigured, externalState: DestinationState = .unconfigured) {
-        self.teamsState = teamsState; self.lastCheck = lastCheck; self.lastLocalSuccess = lastLocalSuccess; self.lastExternalSuccess = lastExternalSuccess; self.lastExternalAttempt = lastExternalAttempt; self.localState = localState; self.externalState = externalState
+    public var detectionError: String?
+    public init(teamsState: MeetingState? = nil, lastCheck: Date? = nil, lastLocalSuccess: Date? = nil, lastExternalSuccess: Date? = nil, lastExternalAttempt: Date? = nil, localState: DestinationState = .unconfigured, externalState: DestinationState = .unconfigured, detectionError: String? = nil) {
+        self.teamsState = teamsState; self.lastCheck = lastCheck; self.lastLocalSuccess = lastLocalSuccess; self.lastExternalSuccess = lastExternalSuccess; self.lastExternalAttempt = lastExternalAttempt; self.localState = localState; self.externalState = externalState; self.detectionError = detectionError
     }
 }
 
@@ -219,7 +232,7 @@ public actor Coordinator {
     }
     public static func make(configuration: Configuration, provider: any MeetingStateProviding = PowerdProvider()) -> Coordinator {
         let local = configuration.localBaseURL.flatMap { url in configuration.localToken.map { HTTPSender(destination: .local(url, $0)) } }
-        let external = configuration.externalWebhookURL.map { HTTPSender(destination: .external($0)) }
+        let external = configuration.externalEnabled ? configuration.externalWebhookURL.map { HTTPSender(destination: .external($0)) } : nil
         return Coordinator(configuration: configuration, provider: provider, local: local, external: external)
     }
     public func restore() async { runtime = await store.load() }
@@ -228,13 +241,19 @@ public actor Coordinator {
         checking = true; defer { checking = false }
         var transitions: [HealthTransition] = []
         do {
-            let state = try await provider.currentState(); let date = now(); let initial = runtime.teamsState == nil; let changed = runtime.teamsState != state
+            let detectedState = try await provider.currentState()
+            let state = detectedState == .unknown ? runtime.teamsState ?? .unknown : detectedState
+            let date = now(); let initial = runtime.teamsState == nil; let changed = runtime.teamsState != state
             runtime.lastCheck = date
+            runtime.detectionError = nil
             if force || initial || changed { await attempt(local, name: "Local", state: state, date: date, transitions: &transitions) }
             let due = runtime.lastExternalAttempt.map { date.timeIntervalSince($0) >= configuration.externalInterval } ?? true
             if force || initial || changed || due { runtime.lastExternalAttempt = date; await attempt(external, name: "External", state: state, date: date, transitions: &transitions) }
             runtime.teamsState = state
-        } catch { await logger.log("Check failed: \(error.localizedDescription)") }
+        } catch {
+            runtime.detectionError = error is AppError && error as? AppError == .logAccessDenied ? "Log access denied" : "Detection failed"
+            await logger.log("Check failed: \(error.localizedDescription)")
+        }
         await store.save(runtime)
         return Snapshot(runtime: runtime, missingSettings: configuration.missingSettings, isChecking: false, transitions: transitions)
     }

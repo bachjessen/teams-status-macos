@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "MSTeamsStatusSender",
+    name: "TeamsMeetingStatus",
     platforms: [.macOS(.v13)],
-    products: [.executable(name: "MSTeamsStatusSender", targets: ["MSTeamsStatusSender"])],
+    products: [.executable(name: "TeamsMeetingStatus", targets: ["TeamsMeetingStatus"])],
     targets: [
-        .executableTarget(name: "MSTeamsStatusSender"),
-        .testTarget(name: "MSTeamsStatusSenderTests", dependencies: ["MSTeamsStatusSender"])
+        .executableTarget(name: "TeamsMeetingStatus"),
+        .testTarget(name: "TeamsMeetingStatusTests", dependencies: ["TeamsMeetingStatus"])
     ]
 )
