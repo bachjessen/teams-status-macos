@@ -24,7 +24,7 @@ Open **Settings…** from the menu-bar app, or create the compatibility configur
 
 ```text
 token="HOME_ASSISTANT_LONG_LIVED_TOKEN"
-local_url="http://homeassistant.local:8123/"
+local_url="http://homeassistant.local/"
 webhook_url="https://example.invalid/api/webhook/example"
 ```
 
@@ -36,7 +36,7 @@ Local delivery updates:
 
 `input_text.microsoft_teams_status`
 
-The Home Assistant base URL must be reachable from the Mac. A local URL might not be reachable while a restrictive corporate VPN is active. External webhook delivery can be used when an externally accessible Home Assistant webhook is available.
+The Home Assistant base URL must be reachable from the Mac. New Home Assistant OS installations created with Home Assistant 2026.8 or later use port 80 by default and normally do not need an explicit port. Existing installations and Home Assistant Container commonly continue using port 8123. Use the server port shown under **Settings → System → Network**. A local URL might not be reachable while a restrictive corporate VPN is active. External webhook delivery can be used when an externally accessible Home Assistant webhook is available.
 
 ## Menu
 

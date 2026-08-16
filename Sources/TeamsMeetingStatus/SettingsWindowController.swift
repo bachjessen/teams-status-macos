@@ -17,7 +17,7 @@ final class SettingsWindowController: NSWindowController {
         local.stringValue = configuration.localBaseURL?.absoluteString ?? ""
         token.stringValue = configuration.localToken ?? ""
         webhook.stringValue = configuration.externalWebhookURL?.absoluteString ?? ""
-        local.placeholderString = "http://homeassistant.local:8123/"
+        local.placeholderString = "http://homeassistant.local/"
         token.placeholderString = "Long-lived access token"
         webhook.placeholderString = "https://example.test/webhook"
         [local, token, webhook].forEach { field in
