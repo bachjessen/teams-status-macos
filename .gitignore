@@ -10,3 +10,4 @@ powerd_log.txt
 previous_state.txt
 .vscode/
 app/
+.agents/
