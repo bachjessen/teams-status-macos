@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Teams status pending")
         item.button?.image?.isTemplate = true
         rebuild(Snapshot(runtime: RuntimeState(), missingSettings: configuration.missingSettings, isChecking: false, transitions: []))
-        if Bundle.main.bundleURL.pathExtension == "app" {
+        if configuration.notificationsEnabled, Bundle.main.bundleURL.pathExtension == "app" {
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         }
         let activeCoordinator = coordinator!
@@ -43,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = SettingsWindowController(configuration: configuration) { [weak self] candidate in
             guard let self else { return }
             configuration = candidate
+            if candidate.notificationsEnabled, Bundle.main.bundleURL.pathExtension == "app" {
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            }
             coordinator = Coordinator.make(configuration: candidate)
             timer?.invalidate()
             timer = Timer.scheduledTimer(withTimeInterval: candidate.checkInterval, repeats: true) { [weak self] _ in
@@ -61,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func complete(_ snapshot: Snapshot) {
         task = nil; rebuild(snapshot)
-        if Bundle.main.bundleURL.pathExtension == "app" {
+        if configuration.notificationsEnabled, Bundle.main.bundleURL.pathExtension == "app" {
             for transition in snapshot.transitions {
                 let content = UNMutableNotificationContent(); content.title = "Teams Meeting Status for Home Assistant"
                 content.body = "\(transition.destination) delivery \(transition.recovered ? "recovered" : "is failing")"
@@ -103,7 +106,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         action(menu, "Open Logs", #selector(openLogs), "")
         menu.addItem(.separator())
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        add(menu, build.map { "Version \(version) (\($0))" } ?? "Version \(version)")
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
         item.menu = menu
     }
     private func add(_ menu: NSMenu, _ title: String) { let entry = NSMenuItem(title: title, action: nil, keyEquivalent: ""); entry.isEnabled = false; menu.addItem(entry) }
@@ -127,9 +134,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 MainActor.assumeIsolated {
     let application = NSApplication.shared
-    let delegate = AppDelegate()
-    application.delegate = delegate
-    application.setActivationPolicy(.accessory)
+    if let bundleIdentifier = Bundle.main.bundleIdentifier,
+       let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+        .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+        existing.activate()
+        application.terminate(nil)
+    } else {
+        let delegate = AppDelegate()
+        application.delegate = delegate
+        application.setActivationPolicy(.accessory)
 
     let mainMenu = NSMenu()
     let editMenuItem = NSMenuItem()
@@ -144,6 +157,7 @@ MainActor.assumeIsolated {
     editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editMenuItem.submenu = editMenu
     application.mainMenu = mainMenu
-    application.run()
-    withExtendedLifetime(delegate) {}
+        application.run()
+        withExtendedLifetime(delegate) {}
+    }
 }
